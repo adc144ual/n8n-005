@@ -1,0 +1,445 @@
+:encoding: utf-8
+:lang: es
+:toc: right
+:toc-title: Tabla de contenidos
+:doctype: book
+:imagesdir: ./images
+:source-highlighter: highlight.js
+
+////
+Nombre - Titulo
+////
+# Práctica 5: Orquestación de Microservicios con Docker Compose, PostgreSQL y RabbitMQ
+Tutorial básico de n8n
+Manel Mena <manel.mena@ual.es>
+
+// Modo no numerado de apartados
+:numbered!: 
+
+[abstract]
+== Resumen
+
+Resumen la Práctica 5
+
+.Objetivos
+
+* Orquestación Multi-Contenedor.
+* Persistencia de Datos.
+* Integración de Bases de Datos
+* Comunicación Asíncrona.
+* Diseño de Sistemas Distribuidos.
+
+// Modo numerado
+:numbered:
+
+
+== Introducción y Objetivos de Aprendizaje
+
+=== Contexto: De un Servicio Aislado a un Sistema Distribuido
+
+En la práctica anterior, construimos y contenerizamos un único microservicio. Si bien fue un paso fundamental, los sistemas del mundo real rara vez consisten en un solo componente. El verdadero poder de la arquitectura de microservicios se manifiesta en la orquestación de múltiples servicios especializados que colaboran para cumplir un objetivo de negocio. Sin embargo, esta colaboración introduce nuevos desafíos: ¿cómo gestionamos el ciclo de vida de múltiples contenedores simultáneamente? ¿Cómo garantizamos que los datos sobrevivan si un contenedor se reinicia? ¿Y cómo permitimos que los servicios se comuniquen de manera eficiente y resiliente, sin crear dependencias rígidas que nos devuelvan a los problemas del monolito?
+
+Esta práctica aborda directamente estas preguntas. Daremos el salto de gestionar un único contenedor a orquestar un ecosistema de servicios interconectados. Introduciremos **Docker Compose** para definir y gestionar nuestra aplicación multi-contenedor, integraremos una base de datos **PostgreSQL** para lograr la persistencia de datos, y utilizaremos una cola de mensajes **RabbitMQ** para implementar una comunicación asíncrona y desacoplada entre nuestros servicios. Al final, habremos construido una aplicación distribuida funcional, robusta y escalable, sentando las bases para la integración con herramientas de orquestación de alto nivel como n8n.
+
+=== Objetivos de Aprendizaje
+
+Al completar esta práctica, el estudiante habrá adquirido las siguientes competencias avanzadas:
+
+* *Orquestación Multi-Contenedor:* Escribir y gestionar un fichero `docker-compose.yml` para definir, ejecutar y conectar múltiples servicios (una API web, una base de datos y un bróker de mensajes).
+* *Persistencia de Datos:* Implementar la persistencia de datos para un servicio de base de datos utilizando volúmenes nombrados de Docker, comprendiendo cómo desacoplar el ciclo de vida de los datos del ciclo de vida del contenedor.
+* *Integración de Bases de Datos:* Modificar una aplicación Python/Flask para conectarse a una base de datos PostgreSQL, utilizando un ORM como SQLAlchemy para realizar operaciones CRUD (Crear, Leer, Actualizar, Borrar).
+* *Comunicación Asíncrona:* Comprender los principios de la mensajería asíncrona y el patrón Productor/Consumidor, implementando ambos roles en servicios Python separados que se comunican a través de RabbitMQ.
+* *Diseño de Sistemas Distribuidos:* Diseñar y construir una aplicación compuesta por servicios débilmente acoplados que colaboran a través de APIs síncronas y colas de mensajes asíncronas, un patrón arquitectónico fundamental en los sistemas modernos.
+
+== Fundamentos Teóricos
+
+=== Orquestación con Docker Compose
+
+En la práctica anterior, gestionamos un único contenedor con comandos como `docker run`, `docker stop`, etc. Imagínese hacer esto para una aplicación con cinco, diez o cincuenta microservicios, cada uno con su propia configuración de puertos, volúmenes y variables de entorno. Sería un proceso manual, propenso a errores e insostenible.
+
+**Docker Compose** es la herramienta de Docker diseñada para resolver este problema. Permite definir y ejecutar aplicaciones multi-contenedor utilizando un único fichero de configuración en formato YAML, típicamente llamado `docker-compose.yml`. En este fichero, se declaran todos los servicios que componen la aplicación, junto con sus configuraciones, redes y volúmenes. Con un solo comando (`docker-compose up`), Docker Compose lee este fichero, crea una red compartida para los servicios y levanta todos los contenedores en el orden correcto.
+
+Un fichero `docker-compose.yml` se estructura en torno a tres secciones principales:
+
+* `version`: Especifica la versión de la sintaxis de Docker Compose que se está utilizando.
+* `services`: Es el corazón del fichero. Aquí se define cada uno de los contenedores que forman parte de la aplicación (e.g., `web`, `db`, `worker`). Para cada servicio, se puede especificar:
+** `image` o `build`: La imagen a utilizar o la ruta al `Dockerfile` para construirla.
+** `ports`: El mapeo de puertos entre el host y el contenedor.
+** `environment`: Las variables de entorno que se pasarán al contenedor.
+** `volumes`: Los volúmenes para la persistencia de datos.
+** `depends_on`: Define las dependencias de arranque entre servicios (e.g., asegurar que la base de datos se inicie antes que la aplicación web).
+* `volumes` y `networks`: Secciones de nivel superior para definir volúmenes y redes nombrados que pueden ser compartidos entre los servicios.
+
+=== Persistencia de Datos con Volúmenes Nombrados
+
+Como vimos en la práctica anterior, el estado de nuestro microservicio "Gestor de Tareas" era efímero; todas las tareas se perdían al reiniciar el contenedor. Esto es inaceptable para la mayoría de las aplicaciones. Las bases de datos, en particular, requieren que sus datos sean persistentes.
+
+Docker resuelve esto a través de los **volúmenes**. Un volumen es un mecanismo para desacoplar el almacenamiento de datos del ciclo de vida del contenedor. Mientras que en la práctica 4 usamos un "bind mount" (mapear un directorio del host), para servicios como bases de datos se prefieren los **volúmenes nombrados**.
+
+Un volumen nombrado es gestionado enteramente por Docker. Se crea y se le asigna un nombre (e.g., `postgres-data`). Luego, se "monta" en un directorio específico dentro del contenedor (e.g., `/var/lib/postgresql/data`, que es donde PostgreSQL almacena sus ficheros). La principal ventaja es que el ciclo de vida del volumen es independiente del contenedor. Incluso si detenemos, eliminamos y recreamos el contenedor de la base de datos, el volumen nombrado `postgres-data` persiste, y al volver a montarlo, la nueva instancia del contenedor encontrará todos los datos intactos. Esto es crucial para las actualizaciones y el mantenimiento.
+
+=== Comunicación Asíncrona con Colas de Mensajes (RabbitMQ)
+
+Cuando nuestro servicio web necesita comunicarse con otro servicio, la forma más simple es una llamada directa a su API (comunicación síncrona). El servicio A envía una petición al servicio B y espera una respuesta. Esto funciona, pero crea un acoplamiento temporal: si el servicio B está caído o sobrecargado, el servicio A se bloquea y puede fallar.
+
+La **comunicación asíncrona** desacopla los servicios. En lugar de hablar directamente, los servicios se comunican a través de un intermediario llamado **bróker de mensajes**, como **RabbitMQ**. El patrón es el siguiente:
+
+* Un servicio **Productor** (Producer) quiere enviar un mensaje (e.g., "se ha creado una nueva tarea"). En lugar de llamar a otro servicio, publica este mensaje en el bróker de mensajes, en una dirección específica llamada **cola** (queue). Una vez publicado, el productor puede continuar con su trabajo sin esperar a que el mensaje sea procesado.
+* Otro servicio, el **Consumidor** (Consumer), está suscrito a esa cola. El bróker de mensajes le entrega el mensaje cuando está disponible. El consumidor procesa el mensaje (e.g., envía una notificación, actualiza un índice de búsqueda) a su propio ritmo.
+
+Este patrón ofrece enormes ventajas en sistemas distribuidos:
+
+* **Desacoplamiento:** El productor no necesita saber quién consumirá el mensaje, ni siquiera si hay alguien escuchando. El consumidor no necesita saber quién produjo el mensaje.
+* **Resiliencia:** Si el servicio consumidor está caído, los mensajes simplemente se acumulan en la cola de RabbitMQ. Cuando el consumidor se recupere, comenzará a procesar los mensajes pendientes. El sistema se "autocura".
+* **Absorción de Picos:** Si de repente se producen 10,000 nuevas tareas, el servicio web puede publicar 10,000 mensajes en la cola muy rápidamente y seguir respondiendo a los usuarios. Los servicios consumidores pueden procesar esa acumulación de mensajes a una velocidad sostenible, evitando que el sistema se colapse.
+
+== Desarrollo Práctico: Evolucionando el "Gestor de Tareas"
+
+En esta sección, transformaremos nuestro microservicio único en una aplicación de tres componentes: una API web, una base de datos PostgreSQL y un trabajador asíncrono, todos orquestados por Docker Compose.
+
+=== Estructura del Proyecto y Configuración Inicial
+
+. Partiendo del proyecto `task-manager-service` de la práctica anterior, vamos a reorganizarlo para soportar múltiples servicios. La nueva estructura será:
++
+[source,text]
+----
+task-manager-system/
+├── docker-compose.yml
+├── web/
+│   ├── app.py
+│   ├── requirements.txt
+│   └── Dockerfile
+└── worker/
+    ├── worker.py
+    ├── requirements.txt
+    └── Dockerfile
+----
+. Cree el directorio raíz `task-manager-system`. Mueva el contenido de su proyecto anterior a la subcarpeta `web/`.
+. Cree la nueva carpeta `worker/`.
+
+=== Creación del Fichero `docker-compose.yml`
+
+Este fichero será el centro de control de nuestra aplicación. Créelo en la raíz del proyecto (`task-manager-system/docker-compose.yml`) con el siguiente contenido:
+
+[source,yaml]
+----
+version: '3.8'
+
+services:
+  # Servicio de la API Web (Flask)
+  web:
+    build:./web
+    container_name: task-manager-web
+    ports:
+      - "5001:5000"
+    volumes:
+      -./web:/app  # Montaje para desarrollo en vivo
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/taskdb
+      - RABBITMQ_URL=amqp://guest:guest@mq:5672/%2F
+    depends_on:
+      - db
+      - mq
+
+  # Servicio del Trabajador Asíncrono (Consumer)
+  worker:
+    build:./worker
+    container_name: task-manager-worker
+    volumes:
+      -./worker:/app # Montaje para desarrollo en vivo
+    environment:
+      - RABBITMQ_URL=amqp://guest:guest@mq:5672/%2F
+    depends_on:
+      - mq
+
+  # Servicio de la Base de Datos
+  db:
+    image: postgres:14-alpine
+    container_name: task-manager-db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=taskdb
+    ports:
+      - "5433:5432" # Exponer para depuración externa
+
+  # Servicio del Bróker de Mensajes
+  mq:
+    image: rabbitmq:3-management-alpine
+    container_name: task-manager-mq
+    ports:
+      - "5672:5672"   # Puerto para la comunicación AMQP
+      - "15672:15672" # Puerto para la interfaz de gestión web
+
+volumes:
+  postgres_data:
+----
+
+*Análisis del fichero:*
+* Se definen cuatro servicios: `web`, `worker`, `db` y `mq`.
+* Los servicios `web` y `worker` se construyen a partir de sus respectivos `Dockerfile`.
+* El servicio `web` depende (`depends_on`) de que `db` y `mq` estén iniciados.
+* Las credenciales y URLs de conexión se pasan como variables de entorno, desacoplando la configuración del código. Note cómo los servicios se comunican usando sus nombres de servicio (e.g., `db`, `mq`) como hostnames, gracias a la red interna que crea Docker Compose.
+* Se define un volumen nombrado `postgres_data` y se monta en el directorio de datos de PostgreSQL para garantizar la persistencia.
+
+=== Modificación del Servicio Web (`web/`)
+
+Nuestro servicio web ahora debe conectarse a PostgreSQL y publicar mensajes en RabbitMQ.
+
+. **Actualizar `web/requirements.txt`:**
++
+[source,text]
+----
+Flask==2.2.2
+Flask-SQLAlchemy==3.0.3
+psycopg2-binary==2.9.5
+pika==1.3.1
+----
+. **Actualizar `web/Dockerfile`:**
++
+El `Dockerfile` de la práctica anterior sigue siendo válido, ya que solo copia los ficheros e instala las dependencias de `requirements.txt`.
+
+. **Reescribir `web/app.py`:**
++
+Reemplace el contenido de `app.py` con el siguiente código, que utiliza SQLAlchemy para la base de datos y Pika para publicar en RabbitMQ.
+
+[source,python]
+----
+# web/app.py
+import os
+import pika
+import json
+from flask import Flask, jsonify, request
+from flask_sqlalchemy import SQLAlchemy
+
+app = Flask(__name__)
+
+# --- Configuración de la Base de Datos ---
+app.config = os.environ.get('DATABASE_URL')
+app.config = False
+db = SQLAlchemy(app)
+
+# --- Modelo de la Base de Datos ---
+class Task(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(120), nullable=False)
+    description = db.Column(db.String(255), nullable=True)
+    done = db.Column(db.Boolean, default=False)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'title': self.title,
+            'description': self.description,
+            'done': self.done
+        }
+
+# --- Configuración de RabbitMQ ---
+RABBITMQ_URL = os.environ.get('RABBITMQ_URL')
+def publish_message(queue_name, message):
+    try:
+        connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
+        channel = connection.channel()
+        channel.queue_declare(queue=queue_name, durable=True)
+        channel.basic_publish(
+            exchange='',
+            routing_key=queue_name,
+            body=json.dumps(message),
+            properties=pika.BasicProperties(delivery_mode=2) # make message persistent
+        )
+        connection.close()
+        print(f" [x] Sent message to queue '{queue_name}'")
+    except Exception as e:
+        print(f"Error publishing message: {e}")
+
+# --- Endpoints de la API ---
+@app.route('/tasks', methods=)
+def get_tasks():
+    tasks = Task.query.all()
+    return jsonify({'tasks': [task.to_dict() for task in tasks]})
+
+@app.route('/tasks', methods=)
+def create_task():
+    if not request.json or not 'title' in request.json:
+        return jsonify({'error': 'Bad request: title is required'}), 400
+    
+    new_task = Task(
+        title=request.json['title'],
+        description=request.json.get('description', "")
+    )
+    db.session.add(new_task)
+    db.session.commit()
+
+    # Publicar mensaje en RabbitMQ
+    publish_message('task_created', new_task.to_dict())
+    
+    return jsonify({'task': new_task.to_dict()}), 201
+
+#... (otros endpoints como get_task, delete_task pueden ser añadidos de forma similar)
+
+if __name__ == '__main__':
+    with app.app_context():
+        db.create_all() # Crea las tablas si no existen
+    app.run(host='0.0.0.0', port=5000, debug=True)
+----
+
+=== Creación del Servicio de Trabajador (`worker/`)
+
+Este servicio será nuestro consumidor de mensajes.
+
+. **Crear `worker/requirements.txt`:**
++
+[source,text]
+----
+pika==1.3.1
+----
+. **Crear `worker/Dockerfile`:**
++
+[source,dockerfile]
+----
+FROM python:3.9-slim-buster
+WORKDIR /app
+COPY requirements.txt.
+RUN pip install --no-cache-dir -r requirements.txt
+COPY..
+CMD ["python", "worker.py"]
+----
+. **Crear `worker/worker.py`:**
++
+Este script se conectará a RabbitMQ, escuchará mensajes en la cola `task_created` y los procesará.
+
+[source,python]
+----
+# worker/worker.py
+import os
+import pika
+import json
+import time
+
+def main():
+    rabbitmq_url = os.environ.get('RABBITMQ_URL')
+    connection = None
+    
+    # Bucle para reintentar la conexión si RabbitMQ no está listo
+    while not connection:
+        try:
+            connection = pika.BlockingConnection(pika.URLParameters(rabbitmq_url))
+            print("Worker: Conectado a RabbitMQ.")
+        except pika.exceptions.AMQPConnectionError:
+            print("Worker: Esperando a RabbitMQ...")
+            time.sleep(5)
+
+    channel = connection.channel()
+    channel.queue_declare(queue='task_created', durable=True)
+
+    def callback(ch, method, properties, body):
+        task_data = json.loads(body)
+        print(f" [x] Recibido y procesado nuevo task: ID={task_data.get('id')}, Título='{task_data.get('title')}'")
+        # Aquí iría la lógica de procesamiento (enviar email, etc.)
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+    channel.basic_qos(prefetch_count=1)
+    channel.basic_consume(queue='task_created', on_message_callback=callback)
+
+    print(' [*] Esperando mensajes. Para salir presione CTRL+C')
+    channel.start_consuming()
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        print('Interrumpido')
+        try:
+            sys.exit(0)
+        except SystemExit:
+            os._exit(0)
+----
+
+=== Ejecución y Verificación del Sistema
+
+. **Levantar la aplicación:**
++
+Desde el directorio raíz (`task-manager-system`), ejecute:
++
+[source,bash]
+----
+docker-compose up --build
+----
++
+`--build` fuerza la reconstrucción de las imágenes si ha habido cambios en los `Dockerfile` o en el código.
+Verá los logs de los cuatro contenedores iniciándose.
+
+. **Verificar la Base de Datos:**
++
+Puede conectarse a la base de datos expuesta en el puerto `5433` con un cliente de SQL para verificar que la tabla `task` ha sido creada.
+
+. **Verificar RabbitMQ:**
++
+Abra un navegador y vaya a `http://localhost:15672`. Use `guest` como usuario y contraseña. Verá la interfaz de gestión de RabbitMQ. Vaya a la pestaña "Queues" y verá la cola `task_created`.
+
+. **Probar el flujo completo:**
++
+En una nueva terminal, cree una nueva tarea usando la API:
++
+[source,bash]
+----
+curl -X POST -H "Content-Type: application/json" \
+     -d '{"title": "Configurar sistema multi-contenedor", "description": "Usar Docker Compose"}' \
+     http://localhost:5001/tasks
+----
++
+* **Observe los logs del servicio `web`:** Verá la petición POST y el mensaje `[x] Sent message to queue 'task_created'`.
+* **Observe los logs del servicio `worker`:** Verá el mensaje `[x] Recibido y procesado nuevo task...`.
+* **Consulte la API de nuevo:** `curl http://localhost:5001/tasks`. Verá que la tarea se ha guardado persistentemente en la base de datos.
+
+. **Detener la aplicación:**
++
+Presione `Ctrl+C` en la terminal donde ejecutó `docker-compose up`. Para eliminar los contenedores, puede ejecutar `docker-compose down`. Si añade la opción `-v`, también eliminará el volumen de la base de datos.
+
+== Ejercicios Propuestos
+
+=== Ejercicio 1: Actualización de Tareas y Notificación (Dificultad: Baja)
+
+*Objetivo:* Implementar la funcionalidad para marcar una tarea como completada y notificarlo a través de la cola de mensajes.
+
+*Requisitos:*
+
+. Añada un nuevo endpoint `PUT /tasks/<int:task_id>/complete` a la API web (`web/app.py`).
+. Este endpoint debe encontrar la tarea en la base de datos, cambiar su estado `done` a `true` y guardar el cambio.
+. Después de actualizar la base de datos, debe publicar un mensaje en una **nueva cola** de RabbitMQ llamada `task_completed`. El mensaje debe contener los datos de la tarea actualizada.
+. Modifique el `worker/worker.py` para que también escuche en la cola `task_completed` y muestre un mensaje de log diferente, como `[+] Tarea completada: ID={...}`.
+
+=== Ejercicio 2: Servicio de Notificaciones por Email (Simulado) (Dificultad: Media)
+
+*Objetivo:* Crear un tercer servicio dedicado exclusivamente a enviar notificaciones, desacoplando aún más la lógica.
+
+*Requisitos:*
+
+. Cree un nuevo directorio `notifier/` con su propio `worker.py`, `requirements.txt` y `Dockerfile`.
+. Añada este nuevo servicio al `docker-compose.yml`.
+. El servicio `notifier` debe consumir mensajes de la cola `task_completed` (del ejercicio anterior).
+. El servicio `worker` original ya no debe escuchar en `task_completed`.
+. Cuando el servicio `notifier` recibe un mensaje, en lugar de imprimir en la consola, debe simular el envío de un email. Puede hacerlo haciendo una petición `POST` a un servicio como `https://webhook.site/`, que le proporcionará una URL única para recibir peticiones.
+
+=== Ejercicio 3: Persistencia de Mensajes y "Dead Letter Queue" (Dificultad: Alta)
+
+*Objetivo:* Aumentar la resiliencia del sistema de mensajería.
+
+*Requisitos:*
+
+. Investigue sobre las "Dead Letter Exchanges" (DLX) en RabbitMQ.
+. Modifique la declaración de la cola `task_created` en el servicio `web` y `worker` para que, si un mensaje es rechazado (nack) por el consumidor, se envíe a una DLX y, de ahí, a una cola de "letras muertas" (e.g., `tasks_failed`).
+. Modifique el `worker.py` para que, si una tarea recibida no tiene un campo `title` (simulando un mensaje malformado), rechace el mensaje (`channel.basic_nack`) sin volver a encolarlo.
+. Verifique en la interfaz de RabbitMQ que, al enviar un mensaje sin `title`, este termina en la cola `tasks_failed`.
+. (Bonus) Cree un cuarto servicio, `error_handler`, que consuma de la cola `tasks_failed` y registre los mensajes fallidos en un fichero de log o en una tabla separada de la base de datos.
+
+== 5. Conclusión y Avance de la Próxima Práctica
+
+En esta práctica, hemos dado un salto monumental, pasando de un simple contenedor a una aplicación distribuida completa. Ha aprendido a usar Docker Compose para orquestar múltiples servicios, a garantizar la persistencia de datos con volúmenes, y a implementar patrones de comunicación asíncrona con colas de mensajes. Estas son las habilidades fundamentales para construir cualquier sistema moderno, escalable y resiliente.
+
+Ahora que hemos construido un ecosistema de microservicios funcional, la pregunta final es: ¿cómo lo integramos y orquestamos con herramientas de más alto nivel? En la sexta y última práctica, cerraremos el círculo y conectaremos todo lo aprendido:
+
+* **Integración con n8n:** Crearemos flujos de trabajo en n8n que interactúen con nuestro sistema. Por ejemplo, un flujo que se dispare por un webhook y llame a nuestra API para crear una tarea, y otro que escuche mensajes de una cola de RabbitMQ para iniciar un proceso de automatización.
+* **Orquestación de Procesos de Negocio:** Diseñaremos un flujo de trabajo complejo en n8n que orqueste una serie de microservicios, demostrando cómo n8n puede actuar como el "pegamento" que une múltiples componentes distribuidos en una solución coherente.
