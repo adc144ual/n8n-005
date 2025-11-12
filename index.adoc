@@ -196,6 +196,7 @@ Flask==2.2.2
 Flask-SQLAlchemy==3.0.3
 psycopg2-binary==2.9.5
 pika==1.3.1
+Werkzeug==2.2.2
 ----
 . **Actualizar `web/Dockerfile`:**
 +
@@ -445,3 +446,4 @@ Ahora que hemos construido un ecosistema de microservicios funcional, la pregunt
 * **Integración con n8n:** Crearemos flujos de trabajo en n8n que interactúen con nuestro sistema. Por ejemplo, un flujo que se dispare por un webhook y llame a nuestra API para crear una tarea, y otro que escuche mensajes de una cola de RabbitMQ para iniciar un proceso de automatización.
 
 * **Orquestación de Procesos de Negocio:** Diseñaremos un flujo de trabajo complejo en n8n que orqueste una serie de microservicios, demostrando cómo n8n puede actuar como el "pegamento" que une múltiples componentes distribuidos en una solución coherente.
+
